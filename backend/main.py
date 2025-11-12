@@ -1,8 +1,11 @@
 from fastapi import FastAPI
+from api.upload import router as upload_router
 
-app = FastAPI()
+app = FastAPI(title = "Smart Document Q&A system")
+
+app.include_router(upload_router, prefix="/upload", tags=["upload"])
 
 @app.get("/")
-def home():
-    return {"Hello": "World"}
+def root():
+    return {"message":"Smart Document Q&A backend is running"}
 
