@@ -3,6 +3,7 @@ from fastapi import FastAPI, File,UploadFile,APIRouter
 from fastapi.responses import JSONResponse
 import os
 from service.loader import load_document
+from service.embedding_store import chuck_documents,store_embedding
 
 router = APIRouter()
 
@@ -18,14 +19,16 @@ async def upload_file(file: UploadFile = File(...)):
 
         os.remove(temp_path)
 
-        combined_text = "\n".join([doc.page_content for doc in documents])
+        chunks = chuck_documents(documents)
+        qdrant_store = store_embedding(collection_name="docs_store",documents=chunks)
+
 
 
         return JSONResponse(
             content = {
                 "filename":file.filename,
-                "num_chunks":len(documents),
-                "sample_text": combined_text[:800]
+                "num_chunks":len(chunks),
+                "message":"Document embedding successfullly stored in Qdrant!"
             }
         )
     except Exception as e:
