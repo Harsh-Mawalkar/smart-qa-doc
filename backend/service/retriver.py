@@ -1,3 +1,4 @@
+# backend/service/retriever.py
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from openai import OpenAI
@@ -5,59 +6,49 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
+OPENAI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-# Gemini via OpenAI compat mode
-client = OpenAI(
-    api_key=os.getenv("GEMINI_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# Embeddings
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-# Vectorstore
-
-
-def ask_question(query: str) -> str:
-    """RAG pipeline: retrieve → build context → LLM."""
-    vector_db = QdrantVectorStore.from_existing_collection(
+def get_vector_db(collection_name="docs_store"):
+    embeddings = get_embeddings()
+    # lazy create from existing collection - will raise if not exists; caller should catch
+    return QdrantVectorStore.from_existing_collection(
         url="http://localhost:6333",
-        collection_name="docs_store",
+        collection_name=collection_name,
         embedding=embeddings,
     )
-    # 1. Retrieve chunks
+
+def ask_question(query: str) -> str:
+    # lazy-load the vector DB each call (safer on startup)
+    try:
+        vector_db = get_vector_db()
+    except Exception as e:
+        return "No documents indexed yet. Please upload a document first."
+
     search_results = vector_db.similarity_search(query=query, k=5)
 
-    # 2. Build context
     context = "\n\n".join([
-        f"Page: {res.metadata.get('page_label', 'N/A')}\n"
-        f"Source: {res.metadata.get('source', 'unknown')}\n"
-        f"Content:\n{res.page_content}"
+        f"Page: {res.metadata.get('page_label','N/A')}\nSource: {res.metadata.get('source','unknown')}\nContent:\n{res.page_content}"
         for res in search_results
     ])
 
-    # 3. System prompt
+    # Setup Gemini client with OpenAI-compatible interface
+    client = OpenAI(api_key=os.getenv("GEMINI_API_KEY"), base_url=OPENAI_COMPAT_BASE)
+
     SYSTEM_PROMPT = f"""
-    You are a helpful AI assistant. 
-    Answer the user's question ONLY using the context retrieved from the document.
+You are an assistant that answers only from the provided context.
 
-    If the answer is not found in the context,
-    say: "I don't know based on the document."
-
-    --- BEGIN CONTEXT ---
-    {context}
-    --- END CONTEXT ---
-    """
-
-    # 4. Gemini Chat Completion
+Context:
+{context}
+Question:
+{query}
+Answer:
+"""
+    # call chat completion
     response = client.chat.completions.create(
         model="gemini-2.5-flash",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": query}
-        ]
+        messages=[{"role":"system","content":SYSTEM_PROMPT}, {"role":"user","content":query}],
     )
-
     return response.choices[0].message.content

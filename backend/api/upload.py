@@ -1,43 +1,31 @@
-import tempfile
-from fastapi import FastAPI, File,UploadFile,APIRouter
+# backend/api/upload.py
+import os, tempfile, shutil
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse
-import os
 from service.loader import load_document
-from service.embedding_store import chuck_documents,store_embedding
+from service.embedding_store import async_store_embedding  # background wrapper
+from uuid import uuid4
 
 router = APIRouter()
 
 @router.post("/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    # save upload to a temp file and schedule background indexing
+    suffix = os.path.splitext(file.filename)[1]
+    tmp_dir = tempfile.mkdtemp(prefix="upload_")
+    tmp_path = os.path.join(tmp_dir, f"{uuid4().hex}{suffix}")
     try:
-        with tempfile.NamedTemporaryFile(delete=False,suffix=os.path.splitext(file.filename)[1]) as tmp:
-            contents = await file.read()
-            tmp.write(contents)
-            temp_path = tmp.name
+        contents = await file.read()
+        with open(tmp_path, "wb") as f:
+            f.write(contents)
 
-        documents = load_document(temp_path)
+        # schedule background indexing (non-blocking)
+        background_tasks.add_task(async_store_embedding, collection_name="docs_store", file_path=tmp_path, original_filename=file.filename)
 
-        os.remove(temp_path)
-
-        chunks = chuck_documents(documents)
-        qdrant_store = store_embedding(collection_name="docs_store",documents=chunks)
-
-
-
-        return JSONResponse(
-            content = {
-                "filename":file.filename,
-                "num_chunks":len(chunks),
-                "message":"Document embedding successfullly stored in Qdrant!"
-            }
-        )
+        return JSONResponse({"status":"accepted", "message":"File received. Indexing in background."})
     except Exception as e:
-        return JSONResponse(content={
-            "error": str(e)},
-            status_code = 500
-            )
-
-
-
-
-
+        # cleanup
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
